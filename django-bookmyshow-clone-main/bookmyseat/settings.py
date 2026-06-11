@@ -19,7 +19,7 @@ DEBUG = os.environ.get("DEBUG", "True") == "True"
 
 ALLOWED_HOSTS = os.environ.get(
     "ALLOWED_HOSTS",
-    "127.0.0.1,localhost,bookmyseat-vlvt.onrender.com"
+    "127.0.0.1,localhost,bookmyseat-v1vt.onrender.com"
 ).split(",")
 
 CSRF_TRUSTED_ORIGINS = os.environ.get(
