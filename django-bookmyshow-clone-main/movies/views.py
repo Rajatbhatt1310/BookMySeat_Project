@@ -1,8 +1,21 @@
 from django.shortcuts import render, redirect, get_object_or_404
-from django.contrib.auth.decorators import login_required
-from django.db import IntegrityError
-from .tasks import send_email_delivery
+from django.contrib.auth.decorators import login_required, user_passes_test
+from django.db import IntegrityError, transaction
 from django.http import JsonResponse
+from django.conf import settings
+from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
+from django.core.cache import cache
+from django.db.models import Count, Sum, Q, F, FloatField, ExpressionWrapper
+from django.db.models.functions import TruncDate, TruncWeek, TruncMonth, ExtractHour
+from django.core.paginator import Paginator, EmptyPage
+
+import json
+import hmac
+import hashlib
+import uuid
+from datetime import timedelta
+
 from .models import (
     Movie,
     Theater,
@@ -13,44 +26,25 @@ from .models import (
     Genre,
     Language,
     EmailDelivery,
-    
 )
 from .utilities import get_youtube_embed_url
-from django.http import JsonResponse
-import json, razorpay, hmac, hashlib, uuid
-from django.conf import settings
-from datetime import timedelta
-from django.utils import timezone
-from django.db import transaction
-from django.views.decorators.csrf import csrf_exempt
-from django.contrib.auth.decorators import user_passes_test
-from django.core.cache import cache
-from django.db.models import Count, Sum, Q, F, FloatField, ExpressionWrapper
-from django.db.models.functions import TruncDate, TruncWeek, TruncMonth, ExtractHour
-from django.views.decorators.http import require_POST
-from django.core.paginator import Paginator, EmptyPage
+from .tasks import send_email_delivery
+
 
 def movie_list(request):
     search_query = request.GET.get("search")
 
-    if search_query:
-        movies = Movie.objects.filter(name__icontains=search_query)
-    else:
-        movies = Movie.objects.all()
+    movies = Movie.objects.filter(name__icontains=search_query) if search_query else Movie.objects.all()
 
-    return render(request, "movies/movie_list.html", {
-        "movies": movies
-    })
+    return render(request, "movies/movie_list.html", {"movies": movies})
 
 
 def movie_detail(request, movie_id):
     movie = get_object_or_404(Movie, id=movie_id)
 
-    trailer_embed_url = get_youtube_embed_url(movie.trailer_url)
-
     return render(request, "movies/movie_detail.html", {
         "movie": movie,
-        "trailer_embed_url": trailer_embed_url,
+        "trailer_embed_url": get_youtube_embed_url(movie.trailer_url),
     })
 
 
@@ -60,7 +54,7 @@ def theater_list(request, movie_id):
 
     return render(request, "movies/theater_list.html", {
         "movie": movie,
-        "theaters": theaters
+        "theaters": theaters,
     })
 
 
@@ -77,7 +71,7 @@ def book_seats(request, theater_id):
             return render(request, "movies/seat_selection.html", {
                 "theater": theater,
                 "seats": seats,
-                "error": "No seat selected"
+                "error": "No seat selected",
             })
 
         for seat_id in selected_seats:
@@ -92,7 +86,7 @@ def book_seats(request, theater_id):
                     user=request.user,
                     seat=seat,
                     movie=theater.movie,
-                    theater=theater
+                    theater=theater,
                 )
 
                 seat.is_booked = True
@@ -102,36 +96,20 @@ def book_seats(request, theater_id):
                 error_seats.append(seat.seat_number)
 
         if error_seats:
-            error_message = f"The following seats are already booked: {', '.join(error_seats)}"
-
             return render(request, "movies/seat_selection.html", {
                 "theater": theater,
                 "seats": seats,
-                "error": error_message
+                "error": f"The following seats are already booked: {', '.join(error_seats)}",
             })
 
         return redirect("profile")
 
     return render(request, "movies/seat_selection.html", {
         "theater": theater,
-        "seats": seats
+        "seats": seats,
     })
-def movie_detail_api(request, movie_id):
-    movie = get_object_or_404(Movie, id=movie_id)
 
-    trailer_embed_url = get_youtube_embed_url(movie.trailer_url)
 
-    return JsonResponse({
-        "id": movie.id,
-        "name": movie.name,
-        "image": movie.image.url if movie.image else None,
-        "rating": str(movie.rating),
-        "cast": movie.cast,
-        "description": movie.description,
-        "trailer_url": movie.trailer_url,
-        "trailer_embed_url": trailer_embed_url,
-    })
-# Adding the react ui i made here using api
 def movie_to_json(movie):
     return {
         "id": movie.id,
@@ -159,12 +137,7 @@ def build_movie_queryset(request, exclude_filter=None):
     genre_slugs = request.GET.getlist("genre")
     language_slugs = request.GET.getlist("language")
 
-    movies = (
-        Movie.objects
-        .select_related("language")
-        .prefetch_related("genres")
-        .all()
-    )
+    movies = Movie.objects.select_related("language").prefetch_related("genres").all()
 
     if search:
         movies = movies.filter(
@@ -209,7 +182,6 @@ def api_movie_list(request):
     page_size = min(page_size, 48)
 
     movies = build_movie_queryset(request).order_by(sort_field)
-
     paginator = Paginator(movies, page_size)
 
     try:
@@ -255,6 +227,7 @@ def api_movie_list(request):
             "allowed": list(allowed_sorting.keys()),
         },
     })
+
 
 def api_movie_detail(request, movie_id):
     movie = get_object_or_404(Movie, id=movie_id)
@@ -319,7 +292,8 @@ def api_seat_list(request):
                 and seat.locked_until
                 and seat.locked_until > now
             ),
-           "locked_until": seat.locked_until.isoformat() if seat.locked_until and not seat.is_booked else None,
+            "locked_until": seat.locked_until.isoformat()
+            if seat.locked_until and not seat.is_booked else None,
         }
         for seat in seats
     ]
@@ -343,15 +317,13 @@ def api_create_booking(request):
         seat = get_object_or_404(Seat, id=seat_id, theater=theater)
 
         if seat.is_booked:
-            return JsonResponse({
-                "error": f"Seat {seat.seat_number} is already booked"
-            }, status=400)
+            return JsonResponse({"error": f"Seat {seat.seat_number} is already booked"}, status=400)
 
         Booking.objects.create(
             user=request.user,
             seat=seat,
             movie=theater.movie,
-            theater=theater
+            theater=theater,
         )
 
         seat.is_booked = True
@@ -364,62 +336,36 @@ def api_create_booking(request):
         "theater": theater.name,
         "seats": booked,
     })
-from django.views.decorators.csrf import csrf_exempt
+
 
 @csrf_exempt
 @login_required(login_url="/login/")
 def lock_seats(request):
-
-    print("LOCK SEATS VIEW CALLED")
-
     if request.method != "POST":
-        return JsonResponse(
-            {"error": "Only POST request allowed"},
-            status=405
-        )
+        return JsonResponse({"error": "Only POST request allowed"}, status=405)
 
     try:
         body = json.loads(request.body)
-    except:
-        return JsonResponse(
-            {"error": "Invalid JSON"},
-            status=400
-        )
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
 
     seat_ids = body.get("seats", [])
 
     if not seat_ids:
-        return JsonResponse(
-            {"error": "No seats selected"},
-            status=400
-        )
+        return JsonResponse({"error": "No seats selected"}, status=400)
 
     now = timezone.now()
     lock_expiry = now + timedelta(minutes=2)
 
     with transaction.atomic():
-
-        seats = Seat.objects.select_for_update().filter(
-            id__in=seat_ids
-        )
+        seats = Seat.objects.select_for_update().filter(id__in=seat_ids)
 
         for seat in seats:
-
             if seat.is_booked:
-                return JsonResponse(
-                    {"error": f"Seat {seat.seat_number} already booked"},
-                    status=409
-                )
+                return JsonResponse({"error": f"Seat {seat.seat_number} already booked"}, status=409)
 
-            if (
-                seat.locked_until
-                and seat.locked_until > now
-                and seat.locked_by != request.user
-            ):
-                return JsonResponse(
-                    {"error": f"Seat {seat.seat_number} already locked"},
-                    status=409
-                )
+            if seat.locked_until and seat.locked_until > now and seat.locked_by != request.user:
+                return JsonResponse({"error": f"Seat {seat.seat_number} already locked"}, status=409)
 
         for seat in seats:
             seat.locked_by = request.user
@@ -428,28 +374,20 @@ def lock_seats(request):
 
     return JsonResponse({
         "message": "Seats locked",
-        "locked_until": lock_expiry.isoformat()
+        "locked_until": lock_expiry.isoformat(),
     })
+
 
 @csrf_exempt
 @login_required(login_url="/login/")
 def confirm_booking(request):
-
-    print("CONFIRM BOOKING VIEW CALLED")
-
     if request.method != "POST":
-        return JsonResponse(
-            {"error": "Only POST request allowed"},
-            status=405
-        )
+        return JsonResponse({"error": "Only POST request allowed"}, status=405)
 
     try:
         body = json.loads(request.body)
-    except:
-        return JsonResponse(
-            {"error": "Invalid JSON"},
-            status=400
-        )
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
 
     theater_id = body.get("theater")
     seat_ids = body.get("seats", [])
@@ -457,10 +395,7 @@ def confirm_booking(request):
     razorpay_payment_id = body.get("payment_id")
 
     if not razorpay_order_id or not razorpay_payment_id:
-        return JsonResponse(
-            {"error": "Payment verification required before booking"},
-            status=400
-        )
+        return JsonResponse({"error": "Payment verification required before booking"}, status=400)
 
     theater = get_object_or_404(Theater, id=theater_id)
     now = timezone.now()
@@ -470,49 +405,36 @@ def confirm_booking(request):
         razorpay_order_id=razorpay_order_id,
         razorpay_payment_id=razorpay_payment_id,
         user=request.user,
-        status="paid"
+        status="paid",
     )
 
     with transaction.atomic():
-
         seats = Seat.objects.select_for_update().filter(
             id__in=seat_ids,
-            theater=theater
+            theater=theater,
         )
 
         if seats.count() != len(seat_ids):
-            return JsonResponse(
-                {"error": "Invalid seats selected"},
-                status=400
-            )
+            return JsonResponse({"error": "Invalid seats selected"}, status=400)
 
         booked = []
 
         for seat in seats:
             if seat.is_booked:
-                return JsonResponse(
-                    {"error": f"Seat {seat.seat_number} already booked"},
-                    status=409
-                )
+                return JsonResponse({"error": f"Seat {seat.seat_number} already booked"}, status=409)
 
             if seat.locked_by != request.user:
-                return JsonResponse(
-                    {"error": "Seat not reserved by you"},
-                    status=403
-                )
+                return JsonResponse({"error": "Seat not reserved by you"}, status=403)
 
             if not seat.locked_until or seat.locked_until < now:
-                return JsonResponse(
-                    {"error": "Reservation expired"},
-                    status=409
-                )
+                return JsonResponse({"error": "Reservation expired"}, status=409)
 
         for seat in seats:
             Booking.objects.create(
                 user=request.user,
                 seat=seat,
                 movie=theater.movie,
-                theater=theater
+                theater=theater,
             )
 
             seat.is_booked = True
@@ -526,18 +448,17 @@ def confirm_booking(request):
         email_status = "not_created"
 
         if recipient_email and "@" in recipient_email:
-           email_delivery, created = EmailDelivery.objects.get_or_create(
-    payment=payment,
-    defaults={
-        "recipient_email": recipient_email,
-        "subject": f"Booking Confirmed - {theater.movie.name}",
-        "status": "queued",
-    }
-)
+            email_delivery, created = EmailDelivery.objects.get_or_create(
+                payment=payment,
+                defaults={
+                    "recipient_email": recipient_email,
+                    "subject": f"Booking Confirmed - {theater.movie.name}",
+                    "status": "queued",
+                },
+            )
 
-send_email_delivery(email_delivery)
-
-email_status = email_delivery.status
+            send_email_delivery(email_delivery)
+            email_status = email_delivery.status
 
     return JsonResponse({
         "id": f"BMS-{payment.id}",
@@ -551,7 +472,6 @@ email_status = email_delivery.status
     })
 
 
-
 @csrf_exempt
 @login_required(login_url="/login/")
 def create_payment_order(request):
@@ -560,7 +480,7 @@ def create_payment_order(request):
 
     try:
         body = json.loads(request.body)
-    except:
+    except Exception:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
     theater_id = body.get("theater")
@@ -568,10 +488,7 @@ def create_payment_order(request):
     amount = body.get("amount")
 
     if not theater_id or not seat_ids or not amount:
-        return JsonResponse(
-            {"error": "Theater, seats and amount are required"},
-            status=400
-        )
+        return JsonResponse({"error": "Theater, seats and amount are required"}, status=400)
 
     theater = get_object_or_404(Theater, id=theater_id)
     now = timezone.now()
@@ -581,7 +498,7 @@ def create_payment_order(request):
 
     existing_payment = Payment.objects.filter(
         idempotency_key=idempotency_key,
-        status__in=["created", "paid"]
+        status__in=["created", "paid"],
     ).first()
 
     if existing_payment:
@@ -596,26 +513,17 @@ def create_payment_order(request):
         })
 
     with transaction.atomic():
-        seats = Seat.objects.select_for_update().filter(
-            id__in=seat_ids,
-            theater=theater
-        )
+        seats = Seat.objects.select_for_update().filter(id__in=seat_ids, theater=theater)
 
         if seats.count() != len(seat_ids):
             return JsonResponse({"error": "Invalid seat selected"}, status=400)
 
         for seat in seats:
             if seat.is_booked:
-                return JsonResponse(
-                    {"error": f"Seat {seat.seat_number} already booked"},
-                    status=409
-                )
+                return JsonResponse({"error": f"Seat {seat.seat_number} already booked"}, status=409)
 
             if seat.locked_by != request.user:
-                return JsonResponse(
-                    {"error": f"Seat {seat.seat_number} is not locked by you"},
-                    status=403
-                )
+                return JsonResponse({"error": f"Seat {seat.seat_number} is not locked by you"}, status=403)
 
             if not seat.locked_until or seat.locked_until < now:
                 return JsonResponse({"error": "Seat reservation expired"}, status=409)
@@ -654,7 +562,7 @@ def verify_payment(request):
 
     try:
         body = json.loads(request.body)
-    except:
+    except Exception:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
     razorpay_order_id = body.get("razorpay_order_id")
@@ -668,40 +576,34 @@ def verify_payment(request):
         payment = get_object_or_404(
             Payment.objects.select_for_update(),
             razorpay_order_id=razorpay_order_id,
-            user=request.user
+            user=request.user,
         )
 
         if payment.status == "paid":
             return JsonResponse({
                 "status": "already_verified",
-                "message": "Duplicate verification ignored"
+                "message": "Duplicate verification ignored",
             })
 
         now = timezone.now()
 
-        if payment.status == "expired" or (
-            payment.expires_at and payment.expires_at < now
-        ):
+        if payment.status == "expired" or (payment.expires_at and payment.expires_at < now):
             payment.status = "expired"
             payment.failure_reason = "Payment timeout before verification"
             payment.save(update_fields=["status", "failure_reason", "updated_at"])
             release_payment_seat_locks(payment)
 
-            return JsonResponse({
-                "error": "Payment expired. Please lock seats again and retry."
-            }, status=409)
+            return JsonResponse({"error": "Payment expired. Please lock seats again and retry."}, status=409)
 
         if payment.status in ["failed", "cancelled"]:
-            return JsonResponse({
-                "error": f"Payment already {payment.status}"
-            }, status=409)
+            return JsonResponse({"error": f"Payment already {payment.status}"}, status=409)
 
         simulated_payment_id = razorpay_payment_id or f"pay_sim_{uuid.uuid4().hex[:12]}"
 
         expected_signature = hmac.new(
             settings.SECRET_KEY.encode(),
             f"{razorpay_order_id}|{simulated_payment_id}".encode(),
-            hashlib.sha256
+            hashlib.sha256,
         ).hexdigest()
 
         if razorpay_signature and razorpay_signature != expected_signature:
@@ -733,12 +635,12 @@ def verify_payment(request):
 def release_payment_seat_locks(payment):
     seats = payment.seats.select_for_update().filter(
         is_booked=False,
-        locked_by=payment.user
+        locked_by=payment.user,
     )
 
     return seats.update(
         locked_by=None,
-        locked_until=None
+        locked_until=None,
     )
 
 
@@ -753,7 +655,7 @@ def razorpay_webhook(request):
     expected_signature = hmac.new(
         settings.SECRET_KEY.encode(),
         body,
-        hashlib.sha256
+        hashlib.sha256,
     ).hexdigest()
 
     if webhook_signature and webhook_signature != expected_signature:
@@ -761,7 +663,7 @@ def razorpay_webhook(request):
 
     try:
         event_data = json.loads(body)
-    except:
+    except Exception:
         return JsonResponse({"error": "Invalid webhook payload"}, status=400)
 
     event_id = event_data.get("event_id")
@@ -774,7 +676,7 @@ def razorpay_webhook(request):
 
     with transaction.atomic():
         payment = Payment.objects.select_for_update().filter(
-            razorpay_order_id=razorpay_order_id
+            razorpay_order_id=razorpay_order_id,
         ).first()
 
         if not payment:
@@ -785,12 +687,10 @@ def razorpay_webhook(request):
                 PaymentWebhookEvent.objects.create(
                     event_id=event_id,
                     payment=payment,
-                    event_type=event_type or "unknown"
+                    event_type=event_type or "unknown",
                 )
             except IntegrityError:
-                return JsonResponse({
-                    "status": "duplicate_webhook_ignored"
-                })
+                return JsonResponse({"status": "duplicate_webhook_ignored"})
 
         if event_type == "payment.captured":
             if payment.status != "paid":
@@ -801,45 +701,27 @@ def razorpay_webhook(request):
 
         elif event_type == "payment.failed":
             payment.status = "failed"
-            payment.failure_reason = event_data.get(
-                "failure_reason",
-                "Payment failed"
-            )
-
+            payment.failure_reason = event_data.get("failure_reason", "Payment failed")
             payment.seats.select_for_update().filter(
                 is_booked=False,
-                locked_by=payment.user
-            ).update(
-                locked_by=None,
-                locked_until=None
-            )
+                locked_by=payment.user,
+            ).update(locked_by=None, locked_until=None)
 
         elif event_type == "payment.cancelled":
             payment.status = "cancelled"
-            payment.cancel_reason = event_data.get(
-                "cancel_reason",
-                "Cancelled by user"
-            )
-
+            payment.cancel_reason = event_data.get("cancel_reason", "Cancelled by user")
             payment.seats.select_for_update().filter(
                 is_booked=False,
-                locked_by=payment.user
-            ).update(
-                locked_by=None,
-                locked_until=None
-            )
+                locked_by=payment.user,
+            ).update(locked_by=None, locked_until=None)
 
         elif event_type == "payment.expired":
             payment.status = "expired"
             payment.failure_reason = "Payment expired before completion"
-
             payment.seats.select_for_update().filter(
                 is_booked=False,
-                locked_by=payment.user
-            ).update(
-                locked_by=None,
-                locked_until=None
-            )
+                locked_by=payment.user,
+            ).update(locked_by=None, locked_until=None)
 
         else:
             return JsonResponse({"status": "unknown_event_ignored"})
@@ -847,6 +729,7 @@ def razorpay_webhook(request):
         payment.save()
 
     return JsonResponse({"status": "webhook_processed"})
+
 
 def is_admin_user(user):
     return user.is_authenticated and user.is_staff
@@ -859,6 +742,7 @@ def admin_analytics_api(request):
 
     if cached_data:
         return JsonResponse(cached_data)
+
     paid_payments = Payment.objects.filter(status="paid")
 
     daily_revenue = list(
@@ -894,15 +778,15 @@ def admin_analytics_api(request):
     )
 
     busiest_theaters = list(
-    Theater.objects
-    .annotate(
-        total_seats=Count("seats"),
-        booked_seats=Count("seats", filter=Q(seats__is_booked=True)),
-    )
+        Theater.objects
+        .annotate(
+            total_seats=Count("seats"),
+            booked_seats=Count("seats", filter=Q(seats__is_booked=True)),
+        )
         .annotate(
             occupancy_rate=ExpressionWrapper(
                 F("booked_seats") * 100.0 / F("total_seats"),
-                output_field=FloatField()
+                output_field=FloatField(),
             )
         )
         .filter(total_seats__gt=0)
@@ -923,9 +807,7 @@ def admin_analytics_api(request):
         status__in=["failed", "cancelled", "expired"]
     ).count()
 
-    cancellation_rate = 0
-    if total_payments > 0:
-        cancellation_rate = round((cancelled_payments / total_payments) * 100, 2)
+    cancellation_rate = round((cancelled_payments / total_payments) * 100, 2) if total_payments > 0 else 0
 
     data = {
         "revenue": {
@@ -942,5 +824,4 @@ def admin_analytics_api(request):
     }
 
     cache.set(cache_key, data, timeout=60)
-
     return JsonResponse(data)
