@@ -9,6 +9,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
 async function request(endpoint, options = {}, fallbackValue = null) {
   try {
     const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      credentials: "include",
       headers: {
         "Content-Type": "application/json",
         ...(options.headers || {}),
@@ -29,12 +30,7 @@ async function request(endpoint, options = {}, fallbackValue = null) {
 
 export async function getMovies() {
   const data = await request("/movies/", {}, { results: fallbackMovies });
-
-  if (Array.isArray(data)) {
-    return data;
-  }
-
-  return data?.results || [];
+  return Array.isArray(data) ? data : data?.results || [];
 }
 
 export async function getMovieCatalog(params = {}) {
@@ -112,19 +108,13 @@ export async function getSeats(theaterId) {
 }
 
 export async function createBooking(payload) {
-  const fallbackBooking = {
-    id: `BMS-${Date.now()}`,
-    status: "Confirmed",
-    ...payload,
-  };
-
   return request(
     "/bookings/",
     {
       method: "POST",
       body: JSON.stringify(payload),
     },
-    fallbackBooking
+    null
   );
 }
 
