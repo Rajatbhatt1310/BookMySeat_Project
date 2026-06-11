@@ -10,12 +10,13 @@ load_dotenv(BASE_DIR / ".env")
 FRONTEND_DIR = BASE_DIR / "frontend" / "dist"
 
 
-SECRET_KEY = os.environ.get(
-    "SECRET_KEY",
-    "django-insecure-local-dev-key"
-)
+def env_bool(name, default=False):
+    return os.environ.get(name, str(default)).lower() in ("true", "1", "yes")
 
-DEBUG = os.environ.get("DEBUG", "True") == "True"
+
+SECRET_KEY = os.environ.get("SECRET_KEY", "django-insecure-local-dev-key")
+
+DEBUG = env_bool("DEBUG", True)
 
 ALLOWED_HOSTS = os.environ.get(
     "ALLOWED_HOSTS",
@@ -24,7 +25,7 @@ ALLOWED_HOSTS = os.environ.get(
 
 CSRF_TRUSTED_ORIGINS = os.environ.get(
     "CSRF_TRUSTED_ORIGINS",
-    "http://127.0.0.1:8000,http://localhost:8000"
+    "http://127.0.0.1:8000,http://localhost:8000,https://bookmyseat-v1vt.onrender.com"
 ).split(",")
 
 
@@ -60,19 +61,23 @@ AUTH_USER_MODEL = "auth.User"
 LOGIN_URL = "/login/"
 
 
+# EMAIL SETTINGS
+# Local default = console email.
+# Render/Production = real SMTP if EMAIL_BACKEND env is set.
 EMAIL_BACKEND = os.environ.get(
     "EMAIL_BACKEND",
     "django.core.mail.backends.console.EmailBackend"
 )
 
-EMAIL_HOST = os.environ.get("EMAIL_HOST", "")
-EMAIL_PORT = int(os.environ.get("EMAIL_PORT", 587))
-EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "True") == "True"
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "smtp.gmail.com")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "587"))
+EMAIL_USE_TLS = env_bool("EMAIL_USE_TLS", True)
 EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+
 DEFAULT_FROM_EMAIL = os.environ.get(
     "DEFAULT_FROM_EMAIL",
-    "BookMySeat <no-reply@bookmyseat.local>"
+    EMAIL_HOST_USER or "BookMySeat <no-reply@bookmyseat.local>"
 )
 
 
@@ -102,6 +107,7 @@ DATABASES = {
     "default": dj_database_url.config(
         default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
         conn_max_age=600,
+        conn_health_checks=True,
     )
 }
 
@@ -163,6 +169,10 @@ SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_HTTPONLY = False
 
+if not DEBUG:
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+
 
 LOGGING = {
     "version": 1,
@@ -180,16 +190,11 @@ LOGGING = {
             "class": "logging.StreamHandler",
             "formatter": "verbose",
         },
-        "email_file": {
-            "class": "logging.FileHandler",
-            "filename": BASE_DIR / "email_failures.log",
-            "formatter": "verbose",
-        },
     },
 
     "loggers": {
         "movies.email": {
-            "handlers": ["console", "email_file"],
+            "handlers": ["console"],
             "level": "INFO",
             "propagate": False,
         },
