@@ -313,7 +313,10 @@ def confirm_booking(request):
     razorpay_payment_id = body.get("payment_id")
 
     if not razorpay_order_id or not razorpay_payment_id:
-        return JsonResponse({"error": "Payment verification required before booking"}, status=400)
+        return JsonResponse(
+            {"error": "Payment verification required before booking"},
+            status=400,
+        )
 
     theater = get_object_or_404(Theater, id=theater_id)
     now = timezone.now()
@@ -327,7 +330,10 @@ def confirm_booking(request):
     )
 
     with transaction.atomic():
-        seats = Seat.objects.select_for_update().filter(id__in=seat_ids, theater=theater)
+        seats = Seat.objects.select_for_update().filter(
+            id__in=seat_ids,
+            theater=theater,
+        )
 
         if seats.count() != len(seat_ids):
             return JsonResponse({"error": "Invalid seats selected"}, status=400)
@@ -336,13 +342,22 @@ def confirm_booking(request):
 
         for seat in seats:
             if seat.is_booked:
-                return JsonResponse({"error": f"Seat {seat.seat_number} already booked"}, status=409)
+                return JsonResponse(
+                    {"error": f"Seat {seat.seat_number} already booked"},
+                    status=409,
+                )
 
             if seat.locked_by != request.user:
-                return JsonResponse({"error": "Seat not reserved by you"}, status=403)
+                return JsonResponse(
+                    {"error": "Seat not reserved by you"},
+                    status=403,
+                )
 
             if not seat.locked_until or seat.locked_until < now:
-                return JsonResponse({"error": "Reservation expired"}, status=409)
+                return JsonResponse(
+                    {"error": "Reservation expired"},
+                    status=409,
+                )
 
         for seat in seats:
             Booking.objects.create(
@@ -361,20 +376,23 @@ def confirm_booking(request):
 
         recipient_email = body.get("contact") or request.user.email
         email_status = "not_created"
+        email_delivery_id = None
 
-       
-    if recipient_email and "@" in recipient_email:
-                    email_delivery, created = EmailDelivery.objects.get_or_create(
-                    payment=payment,
-                    defaults={
-                                "recipient_email": recipient_email,
-                                "subject": f"Booking Confirmed - {theater.movie.name}",
-                                "status": "queued",
-        },
-    )
+        if recipient_email and "@" in recipient_email:
+            email_delivery, created = EmailDelivery.objects.get_or_create(
+                payment=payment,
+                defaults={
+                    "recipient_email": recipient_email,
+                    "subject": f"Booking Confirmed - {theater.movie.name}",
+                    "status": "queued",
+                },
+            )
+            email_delivery_id = email_delivery.id
 
-    send_email_delivery(email_delivery)
-    email_status = email_delivery.status
+    if email_delivery_id:
+        email_delivery = EmailDelivery.objects.get(id=email_delivery_id)
+        send_email_delivery(email_delivery)
+        email_status = email_delivery.status
 
     return JsonResponse({
         "id": f"BMS-{payment.id}",
@@ -386,7 +404,6 @@ def confirm_booking(request):
         "order_id": razorpay_order_id,
         "email_status": email_status,
     })
-
 
 @csrf_exempt
 @login_required(login_url="/login/")
