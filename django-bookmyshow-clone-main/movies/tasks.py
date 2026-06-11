@@ -19,10 +19,10 @@ def release_expired_locks():
     count = Seat.objects.filter(
         is_booked=False,
         locked_until__isnull=False,
-        locked_until__lt=now
+        locked_until__lt=now,
     ).update(
         locked_by=None,
-        locked_until=None
+        locked_until=None,
     )
 
     print(f"Expired locks released: {count}")
@@ -34,7 +34,7 @@ def expire_pending_payments():
     expired_payments = Payment.objects.filter(
         status="created",
         expires_at__isnull=False,
-        expires_at__lt=now
+        expires_at__lt=now,
     ).prefetch_related("seats")
 
     expired_count = 0
@@ -44,16 +44,18 @@ def expire_pending_payments():
         with transaction.atomic():
             locked_seats = payment.seats.select_for_update().filter(
                 is_booked=False,
-                locked_by=payment.user
+                locked_by=payment.user,
             )
 
             released_seat_count += locked_seats.update(
                 locked_by=None,
-                locked_until=None
+                locked_until=None,
             )
 
             payment.status = "expired"
-            payment.failure_reason = "Payment timeout. User did not complete payment within allowed time."
+            payment.failure_reason = (
+                "Payment timeout. User did not complete payment within allowed time."
+            )
             payment.save(update_fields=["status", "failure_reason", "updated_at"])
 
             expired_count += 1
@@ -62,46 +64,59 @@ def expire_pending_payments():
     print(f"Seats released after payment timeout: {released_seat_count}")
 
 
-def process_queued_booking_emails():
+def process_queued_booking_emails(limit=10):
     queued_emails = (
         EmailDelivery.objects
-        .select_related("payment", "payment__user", "payment__theater", "payment__theater__movie")
+        .select_related(
+            "payment",
+            "payment__user",
+            "payment__theater",
+            "payment__theater__movie",
+        )
         .filter(status="queued", retry_count__lt=3)
-        .order_by("created_at")[:10]
+        .order_by("created_at")[:limit]
     )
 
     for email_delivery in queued_emails:
-        try:
-            send_booking_confirmation_email(email_delivery)
+        send_email_delivery(email_delivery)
 
-            email_delivery.status = "sent"
-            email_delivery.sent_at = timezone.now()
-            email_delivery.last_error = None
-            email_delivery.save(
-                update_fields=["status", "sent_at", "last_error", "updated_at"]
-            )
 
-            logger.info(
-                "Booking confirmation email sent to %s for payment %s",
-                email_delivery.recipient_email,
-                email_delivery.payment.razorpay_order_id,
-            )
+def send_email_delivery(email_delivery):
+    try:
+        send_booking_confirmation_email(email_delivery)
 
-        except Exception as error:
-            email_delivery.retry_count += 1
-            email_delivery.last_error = str(error)
+        email_delivery.status = "sent"
+        email_delivery.sent_at = timezone.now()
+        email_delivery.last_error = ""
+        email_delivery.save(
+            update_fields=["status", "sent_at", "last_error", "updated_at"]
+        )
 
-            if email_delivery.retry_count >= email_delivery.max_retries:
-                email_delivery.status = "failed"
+        logger.info(
+            "Booking confirmation email sent to %s for payment %s",
+            email_delivery.recipient_email,
+            email_delivery.payment.razorpay_order_id,
+        )
 
-            email_delivery.save(
-                update_fields=["retry_count", "last_error", "status", "updated_at"]
-            )
+        return True
 
-            logger.exception(
-                "Booking confirmation email failed for %s",
-                email_delivery.recipient_email,
-            )
+    except Exception as error:
+        email_delivery.retry_count += 1
+        email_delivery.last_error = str(error)
+
+        if email_delivery.retry_count >= email_delivery.max_retries:
+            email_delivery.status = "failed"
+
+        email_delivery.save(
+            update_fields=["retry_count", "last_error", "status", "updated_at"]
+        )
+
+        logger.exception(
+            "Booking confirmation email failed for %s",
+            email_delivery.recipient_email,
+        )
+
+        return False
 
 
 def send_booking_confirmation_email(email_delivery):
