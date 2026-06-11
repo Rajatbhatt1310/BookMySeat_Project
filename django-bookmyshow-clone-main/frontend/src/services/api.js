@@ -4,8 +4,7 @@ import {
   generateFallbackSeats,
 } from "../data/dummyData.js";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000/api";
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "/api";
 
 async function request(endpoint, options = {}, fallbackValue = null) {
   try {
@@ -98,9 +97,8 @@ export async function getTheaters(movieId) {
 
 export async function getTheater(theaterId) {
   const fallbackTheater =
-    fallbackTheaters.find(
-      (theater) => String(theater.id) === String(theaterId)
-    ) || fallbackTheaters[0];
+    fallbackTheaters.find((theater) => String(theater.id) === String(theaterId)) ||
+    fallbackTheaters[0];
 
   return request(`/theaters/${theaterId}/`, {}, fallbackTheater);
 }
