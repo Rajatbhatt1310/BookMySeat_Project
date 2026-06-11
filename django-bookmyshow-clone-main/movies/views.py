@@ -217,6 +217,49 @@ def api_seat_list(request):
     ], safe=False)
 
 
+@login_required(login_url="/login/")
+def api_create_booking(request):
+    if request.method != "POST":
+        return JsonResponse({"error": "Only POST request allowed"}, status=405)
+
+    try:
+        body = json.loads(request.body)
+    except Exception:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+
+    theater_id = body.get("theater")
+    selected_seats = body.get("seats", [])
+
+    theater = get_object_or_404(Theater, id=theater_id)
+    booked = []
+
+    for seat_id in selected_seats:
+        seat = get_object_or_404(Seat, id=seat_id, theater=theater)
+
+        if seat.is_booked:
+            return JsonResponse(
+                {"error": f"Seat {seat.seat_number} is already booked"},
+                status=400,
+            )
+
+        Booking.objects.create(
+            user=request.user,
+            seat=seat,
+            movie=theater.movie,
+            theater=theater,
+        )
+
+        seat.is_booked = True
+        seat.save()
+        booked.append(seat.seat_number)
+
+    return JsonResponse({
+        "status": "Confirmed",
+        "movie": theater.movie.name,
+        "theater": theater.name,
+        "seats": booked,
+    })
+
 @csrf_exempt
 @login_required(login_url="/login/")
 def lock_seats(request):
