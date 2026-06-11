@@ -319,8 +319,8 @@ def confirm_booking(request):
         recipient_email = body.get("contact") or request.user.email
         email_status = "not_created"
 
-        if recipient_email and "@" in recipient_email:
-           if recipient_email and "@" in recipient_email:
+       
+    if recipient_email and "@" in recipient_email:
                     email_delivery, created = EmailDelivery.objects.get_or_create(
                     payment=payment,
                     defaults={
