@@ -28,7 +28,7 @@ from .models import (
     EmailDelivery,
 )
 from .utilities import get_youtube_embed_url
-from .tasks import send_email_delivery
+
 
 
 def movie_list(request):
@@ -448,17 +448,16 @@ def confirm_booking(request):
         email_status = "not_created"
 
         if recipient_email and "@" in recipient_email:
-            email_delivery, created = EmailDelivery.objects.get_or_create(
-                payment=payment,
-                defaults={
-                    "recipient_email": recipient_email,
-                    "subject": f"Booking Confirmed - {theater.movie.name}",
-                    "status": "queued",
-                },
-            )
+    EmailDelivery.objects.get_or_create(
+        payment=payment,
+        defaults={
+            "recipient_email": recipient_email,
+            "subject": f"Booking Confirmed - {theater.movie.name}",
+            "status": "queued",
+        },
+    )
 
-            send_email_delivery(email_delivery)
-            email_status = email_delivery.status
+    email_status = "queued"
 
     return JsonResponse({
         "id": f"BMS-{payment.id}",
