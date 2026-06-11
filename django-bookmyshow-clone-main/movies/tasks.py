@@ -150,4 +150,6 @@ def send_booking_confirmation_email(email_delivery):
     )
 
     email.attach_alternative(html_body, "text/html")
+
+    email.connection.timeout = 10
     email.send(fail_silently=False)
