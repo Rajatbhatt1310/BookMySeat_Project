@@ -6,23 +6,48 @@ function Login() {
   const navigate = useNavigate();
   const location = useLocation();
   const { login } = useAuth();
-  const [form, setForm] = useState({ email: "", password: "" });
+
+  const [form, setForm] = useState({
+    email: "",
+    password: "",
+  });
+
+  const [error, setError] = useState("");
 
   function handleChange(event) {
-    setForm({ ...form, [event.target.name]: event.target.value });
+    setForm({
+      ...form,
+      [event.target.name]: event.target.value,
+    });
   }
 
-  function handleSubmit(event) {
+  async function handleSubmit(event) {
     event.preventDefault();
-    login(form);
-    navigate(location.state?.from || "/profile");
+
+    try {
+      setError("");
+
+      await login(form);
+
+      navigate(location.state?.from || "/profile");
+    } catch (err) {
+      setError("Invalid credentials");
+    }
   }
 
   return (
     <section className="container auth-page">
       <form className="form-card auth-card" onSubmit={handleSubmit}>
         <span className="eyebrow">Welcome back</span>
+
         <h1>Login</h1>
+
+        {error && (
+          <p style={{ color: "red" }}>
+            {error}
+          </p>
+        )}
+
         <label>
           Email
           <input
@@ -30,10 +55,10 @@ function Login() {
             type="email"
             value={form.email}
             onChange={handleChange}
-            placeholder="you@example.com"
             required
           />
         </label>
+
         <label>
           Password
           <input
@@ -41,15 +66,22 @@ function Login() {
             type="password"
             value={form.password}
             onChange={handleChange}
-            placeholder="Your password"
             required
           />
         </label>
-        <button className="btn btn-primary full-width" type="submit">
+
+        <button
+          className="btn btn-primary full-width"
+          type="submit"
+        >
           Login
         </button>
+
         <p className="muted centered">
-          New to BookMySeat? <Link to="/signup">Create an account</Link>
+          New to BookMySeat?{" "}
+          <Link to="/signup">
+            Create an account
+          </Link>
         </p>
       </form>
     </section>

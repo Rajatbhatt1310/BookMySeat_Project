@@ -5,8 +5,8 @@ const USER_KEY = "bookmyseat_user";
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
-    const savedUser = localStorage.getItem(USER_KEY);
-    return savedUser ? JSON.parse(savedUser) : null;
+    const saved = localStorage.getItem(USER_KEY);
+    return saved ? JSON.parse(saved) : null;
   });
 
   useEffect(() => {
@@ -17,40 +17,56 @@ export function AuthProvider({ children }) {
     }
   }, [user]);
 
-  function login(credentials) {
-    const loggedInUser = {
-      name: credentials.email.split("@")[0] || "Movie Fan",
-      email: credentials.email,
-    };
-    setUser(loggedInUser);
-    return loggedInUser;
-  }
+  async function login(credentials) {
+    const response = await fetch("/login/", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        username: credentials.email,
+        password: credentials.password,
+      }),
+    });
 
-  function signup(formData) {
-    const createdUser = {
-      name: formData.name,
-      email: formData.email,
+    if (!response.ok) {
+      throw new Error("Login failed");
+    }
+
+    const loggedUser = {
+      email: credentials.email,
+      name: credentials.email.split("@")[0],
     };
-    setUser(createdUser);
-    return createdUser;
+
+    setUser(loggedUser);
+
+    return loggedUser;
   }
 
   function logout() {
+    fetch("/logout/", {
+      credentials: "include",
+    }).catch(() => {});
+
     setUser(null);
   }
 
   const value = useMemo(
     () => ({
       user,
-      isAuthenticated: Boolean(user),
+      isAuthenticated: !!user,
       login,
-      signup,
       logout,
     }),
     [user]
   );
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
 }
 
 export function useAuth() {
